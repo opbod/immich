@@ -3,17 +3,16 @@ from typing import Any
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 from insightface.model_zoo import ArcFaceONNX, RetinaFace
 from insightface.utils.face_align import norm_crop
 
 from app.config import clean_name
 from app.schemas import BoundingBox, Face, ModelType, ndarray_f32
 
-from .onnx import OnnxModel
+from .base import InferenceModel
 
 
-class FaceRecognizer(OnnxModel):
+class FaceRecognizer(InferenceModel):
     _model_type = ModelType.FACIAL_RECOGNITION
 
     def __init__(
@@ -27,23 +26,8 @@ class FaceRecognizer(OnnxModel):
         super().__init__(clean_name(model_name), cache_dir, **model_kwargs)
 
     def _load(self) -> None:
-        self.det_model = RetinaFace(
-            session=ort.InferenceSession(
-                self.det_file.as_posix(),
-                sess_options=self.sess_options,
-                providers=self.providers,
-                provider_options=self.provider_options,
-            ),
-        )
-        self.rec_model = ArcFaceONNX(
-            self.rec_file.as_posix(),
-            session=ort.InferenceSession(
-                self.rec_file.as_posix(),
-                sess_options=self.sess_options,
-                providers=self.providers,
-                provider_options=self.provider_options,
-            ),
-        )
+        self.det_model = RetinaFace(session=self._make_session(self.det_file))
+        self.rec_model = ArcFaceONNX(self.rec_file.as_posix(), session=self._make_session(self.rec_file))
 
         self.det_model.prepare(
             ctx_id=0,

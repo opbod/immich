@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import pickle
 from abc import ABC, abstractmethod
 from pathlib import Path
 from shutil import rmtree
 from typing import Any
 
+import onnxruntime as ort
 from huggingface_hub import snapshot_download
+from typing_extensions import Buffer
 
-from ..config import get_cache_dir, get_hf_model_name, log
+import ann.ann
+
+from ..config import get_cache_dir, get_hf_model_name, log, settings
 from ..schemas import ModelType
+from .ann import AnnSession
 
 
 class InferenceModel(ABC):
@@ -18,11 +24,36 @@ class InferenceModel(ABC):
         self,
         model_name: str,
         cache_dir: Path | str | None = None,
+        inter_op_num_threads: int = settings.model_inter_op_threads,
+        intra_op_num_threads: int = settings.model_intra_op_threads,
         **model_kwargs: Any,
     ) -> None:
         self.model_name = model_name
         self.loaded = False
         self._cache_dir = Path(cache_dir) if cache_dir is not None else None
+        self.providers = model_kwargs.pop("providers", ["CPUExecutionProvider"])
+        #  don't pre-allocate more memory than needed
+        self.provider_options = model_kwargs.pop(
+            "provider_options", [{"arena_extend_strategy": "kSameAsRequested"}] * len(self.providers)
+        )
+        log.debug(
+            (
+                f"Setting '{self.model_name}' execution providers to {self.providers}"
+                "in descending order of preference"
+            ),
+        )
+        log.debug(f"Setting execution provider options to {self.provider_options}")
+        self.sess_options = PicklableSessionOptions()
+        # avoid thread contention between models
+        if inter_op_num_threads > 1:
+            self.sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+
+        log.debug(f"Setting execution_mode to {self.sess_options.execution_mode.name}")
+        log.debug(f"Setting inter_op_num_threads to {inter_op_num_threads}")
+        log.debug(f"Setting intra_op_num_threads to {intra_op_num_threads}")
+        self.sess_options.inter_op_num_threads = inter_op_num_threads
+        self.sess_options.intra_op_num_threads = intra_op_num_threads
+        self.sess_options.enable_cpu_mem_arena = False
 
     def download(self) -> None:
         if not self.cached:
@@ -109,3 +140,28 @@ class InferenceModel(ABC):
             )
             self.cache_dir.unlink()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _make_session(self, model_path: Path) -> AnnSession | ort.InferenceSession:
+        armnn_path = model_path.with_suffix(".armnn")
+        if settings.ann and ann.ann.is_available and armnn_path.exists():
+            session = AnnSession(armnn_path)
+        else:
+            session = ort.InferenceSession(
+                model_path.as_posix(),
+                sess_options=self.sess_options,
+                providers=self.providers,
+                provider_options=self.provider_options,
+            )
+        return session
+
+
+# HF deep copies configs, so we need to make session options picklable
+class PicklableSessionOptions(ort.SessionOptions):  # type: ignore[misc]
+    def __getstate__(self) -> bytes:
+        return pickle.dumps([(attr, getattr(self, attr)) for attr in dir(self) if not callable(getattr(self, attr))])
+
+    def __setstate__(self, state: Buffer) -> None:
+        self.__init__()  # type: ignore[misc]
+        attrs: list[tuple[str, Any]] = pickle.loads(state)
+        for attr, val in attrs:
+            setattr(self, attr, val)

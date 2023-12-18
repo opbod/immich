@@ -16,6 +16,8 @@ class ExportBase(torch.nn.Module):
         super().__init__()
         self.device = device
         self.name = name
+        self.optimize = 5
+        self.nchw_transpose = False
 
     def dummy_input(self):
         pass
@@ -45,6 +47,7 @@ class RetinaFace(ExportBase):
     def __init__(self, onnx_model_path: str, device: torch.device):
         name, _ = os.path.splitext(os.path.basename(onnx_model_path))
         super().__init__(device, name)
+        self.optimize = 3
         self.model = convert(onnx_model_path).eval().to(device)
         if self.device.type == "cuda":
             self.model = self.model.half()
@@ -84,7 +87,13 @@ def export(model: ExportBase):
     tflite_model_path = f"output/{model.name}.tflite"
     os.makedirs("output", exist_ok=True)
 
-    converter = TFLiteConverter(jit, dummy_input, tflite_model_path, nchw_transpose=True)
+    converter = TFLiteConverter(
+        jit,
+        dummy_input,
+        tflite_model_path,
+        optimize=model.optimize,
+        nchw_transpose=model.nchw_transpose,
+    )
     # segfaults on ARM, must run on x86_64 / AMD64
     converter.convert()
 

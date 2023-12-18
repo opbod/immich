@@ -25,22 +25,20 @@ public:
              bool saveCachedNetwork,
              const char *cachedNetworkPath)
     {
-        // BindingPointInfo inputInfo;
-        // BindingPointInfo outputInfo;
         INetworkPtr network = loadModel(modelPath);
-
         IOptimizedNetworkPtr optNet = OptimizeNetwork(network.get(), fastMath, fp16, saveCachedNetwork, cachedNetworkPath);
         const IOInfos infos = getIOInfos(optNet.get());
         NetworkId netId;
         Status status = runtime->LoadNetwork(netId, std::move(optNet));
-        // TODO check status
+        if (status != Status::Success)
+        {
+            return -1;
+        }
         ioInfos[netId] = infos;
-        // inputInfos[netId] = inputInfo;
-        // outputInfos[netId] = outputInfo;
         return netId;
     }
 
-    void embed(NetworkId netId, const void **inputData, void **outputData)
+    void execute(NetworkId netId, const void **inputData, void **outputData)
     {
         const IOInfos *infos = &ioInfos[netId];
         InputTensors inputTensors;
@@ -53,10 +51,6 @@ public:
         i = 0;
         for (const BindingPointInfo &info : infos->outputInfos)
             outputTensors.emplace_back(info.first, Tensor(info.second, outputData[i++]));
-        // const BindingPointInfo *inputInfo = &inputInfos[netId];
-        // const BindingPointInfo *outputInfo = &outputInfos[netId];
-        // InputTensors inputTensors = {{inputInfo->first, ConstTensor{inputInfo->second, inputData}}};
-        // OutputTensors outputTensors = {{outputInfo->first, Tensor{outputInfo->second, outputData}}};
         runtime->EnqueueWorkload(netId, inputTensors, outputTensors);
     }
 
@@ -104,31 +98,18 @@ private:
         if (path.rfind(".tflite") == path.length() - 7) // endsWith()
         {
             auto parser = armnnTfLiteParser::ITfLiteParser::CreateRaw();
-            INetworkPtr network = parser->CreateNetworkFromBinaryFile(modelPath);
-            // auto inputBinding = parser->GetNetworkInputBindingInfo(0, inputName);
-            // inputInfo = getInputTensorInfo(inputBinding.first, inputBinding.second);
-            // outputInfo = parser->GetNetworkOutputBindingInfo(0, outputName);
-            return network;
+            return parser->CreateNetworkFromBinaryFile(modelPath);
         }
         else if (path.rfind(".onnx") == path.length() - 5) // endsWith()
         {
             auto parser = armnnOnnxParser::IOnnxParser::CreateRaw();
-            INetworkPtr network = parser->CreateNetworkFromBinaryFile(modelPath);
-            // auto inputBinding = parser->GetNetworkInputBindingInfo(inputName);
-            // inputInfo = getInputTensorInfo(inputBinding.first, inputBinding.second);
-            // outputInfo = parser->GetNetworkOutputBindingInfo(outputName);
-            return network;
+            return parser->CreateNetworkFromBinaryFile(modelPath);
         }
         else
         {
             std::ifstream ifs(path, std::ifstream::in | std::ifstream::binary);
             auto parser = armnnDeserializer::IDeserializer::CreateRaw();
-            INetworkPtr network = parser->CreateNetworkFromBinary(ifs);
-            // auto inputBinding = parser->GetNetworkInputBindingInfo(0, inputName);
-            // inputInfo = getInputTensorInfo(inputBinding.m_BindingId, inputBinding.m_TensorInfo);
-            // auto outputBinding = parser->GetNetworkOutputBindingInfo(0, outputName);
-            // outputInfo = {outputBinding.m_BindingId, outputBinding.m_TensorInfo};
-            return network;
+            return parser->CreateNetworkFromBinary(ifs);
         }
     }
 
@@ -159,7 +140,7 @@ private:
         }
         options.AddModelOption(gpuAcc);
 
-        // No point in using ARMNN for CPU, use ONNX instead.
+        // No point in using ARMNN for CPU, use ONNX (quantized) instead.
         // BackendOptions cpuAcc("CpuAcc",
         //                       {
         //                           {"FastMathEnabled", fastMath},
@@ -209,8 +190,6 @@ private:
 
     IRuntime *runtime;
     std::map<NetworkId, IOInfos> ioInfos;
-    // std::map<NetworkId, BindingPointInfo> inputInfos;
-    // std::map<NetworkId, BindingPointInfo> outputInfos;
 };
 
 extern "C" void *init(int logLevel, int tuningLevel, const char *tuningFile)
@@ -242,9 +221,9 @@ extern "C" void unload(void *ann, NetworkId netId)
     ((Ann *)ann)->unload(netId);
 }
 
-extern "C" void embed(void *ann, NetworkId netId, const void **inputData, void **outputData)
+extern "C" void execute(void *ann, NetworkId netId, const void **inputData, void **outputData)
 {
-    ((Ann *)ann)->embed(netId, inputData, outputData);
+    ((Ann *)ann)->execute(netId, inputData, outputData);
 }
 
 extern "C" unsigned long shape(void *ann, NetworkId netId, bool isInput, int index)

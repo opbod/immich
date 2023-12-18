@@ -1,3 +1,5 @@
+import os
+import threading
 from ctypes import CDLL, Array, c_bool, c_char_p, c_int, c_ubyte, c_ulong, c_void_p
 from os.path import exists
 from typing import Dict, List, Tuple
@@ -6,21 +8,23 @@ import numpy as np
 from numpy.typing import NDArray
 
 try:
+    CDLL("libmali.so")  # fail if libmali.so is not mounted into container
     libann = CDLL("libann.so")
     libann.init.argtypes = c_int, c_int, c_char_p
     libann.init.restype = c_void_p
     libann.load.argtypes = c_void_p, c_char_p, c_bool, c_bool, c_bool, c_char_p
     libann.load.restype = c_int
-    libann.embed.argtypes = c_void_p, c_int, Array[c_void_p], Array[c_void_p]
+    libann.execute.argtypes = c_void_p, c_int, Array[c_void_p], Array[c_void_p]
     libann.unload.argtypes = c_void_p, c_int
     libann.destroy.argtypes = (c_void_p,)
     libann.shape.argtypes = c_void_p, c_int, c_bool, c_int
     libann.shape.restype = c_ulong
     libann.tensors.argtypes = c_void_p, c_int, c_bool
     libann.tensors.restype = c_int
-    libann_available = True
-except OSError:
-    libann_available = False
+    is_available = True
+except OSError as e:
+    print("Could not load ANN shared libraries, using ONNX:", e)
+    is_available = False
 
 
 class _Singleton(type):
@@ -28,13 +32,17 @@ class _Singleton(type):
 
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
-            cls._instances[cls] = super(_Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
+            obj = super(_Singleton, cls).__call__(*args, **kwargs)
+            cls._instances[cls] = obj
+        else:
+            obj = cls._instances[cls]
+            obj.new()
+        return obj
 
 
 class Ann(metaclass=_Singleton):
     def __init__(self, log_level=3, tuning_level=1, tuning_file: str = None) -> None:
-        if not libann_available:
+        if not is_available:
             return
         if tuning_file and not exists(tuning_file):
             raise ValueError("tuning_file must point to an existing (possibly empty) file!")
@@ -44,12 +52,31 @@ class Ann(metaclass=_Singleton):
             raise ValueError("tuning_level must be 0 (load from tuning_file), 1, 2 or 3.")
         if log_level < 0 or log_level > 5:
             raise ValueError("log_level must be 0 (trace), 1 (debug), 2 (info), 3 (warning), 4 (error) or 5 (fatal)")
-        self.ann = libann.init(log_level, tuning_level, tuning_file.encode("utf-8") if tuning_file else None)
+        self.log_level = log_level
+        self.tuning_level = tuning_level
+        self.tuning_file = tuning_file
         self.output_shapes: Dict[int, Tuple[Tuple[int, ...]]] = {}
         self.input_shapes: Dict[int, Tuple[Tuple[int, ...]]] = {}
+        self.new()
+
+    def new(self):
+        if not hasattr(self, "ann"):
+            self.ann = libann.init(
+                self.log_level,
+                self.tuning_level,
+                self.tuning_file.encode("utf-8") if self.tuning_file else None,
+            )
+            self.ref_count = 0
+
+        self.ref_count += 1
+
+    def destroy(self) -> None:
+        self.ref_count -= 1
+        if self.ref_count <= 0 and hasattr(self, "ann"):
+            libann.destroy(self.ann)
 
     def __del__(self) -> None:
-        libann.destroy(self.ann)
+        self.destroy()
 
     def load(
         self,
@@ -86,7 +113,9 @@ class Ann(metaclass=_Singleton):
         libann.unload(self.ann, network_id)
         del self.output_shapes[network_id]
 
-    def embed(self, network_id: int, input_tensors: List[NDArray]) -> List[NDArray]:
+    def execute(self, network_id: int, input_tensors: List[NDArray]) -> List[NDArray]:
+        if not isinstance(input_tensors, list):
+            raise ValueError("input_tensors needs to be a list!")
         net_input_shapes = self.input_shapes[network_id]
         if len(input_tensors) != len(net_input_shapes):
             raise ValueError(f"input_tensors lengths {len(input_tensors)} != network inputs {len(net_input_shapes)}")
@@ -98,7 +127,7 @@ class Ann(metaclass=_Singleton):
         inputs = input_type(*[t.ctypes.data_as(c_void_p) for t in input_tensors])
         output_type = c_void_p * len(output_tensors)
         outputs = output_type(*[t.ctypes.data_as(c_void_p) for t in output_tensors])
-        libann.embed(self.ann, network_id, inputs, outputs)
+        libann.execute(self.ann, network_id, inputs, outputs)
         return output_tensors
 
     def shape(self, network_id: int, input=False, index=0) -> Tuple[int]:
