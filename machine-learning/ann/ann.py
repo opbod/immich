@@ -1,6 +1,4 @@
-import os
-import threading
-from ctypes import CDLL, Array, c_bool, c_char_p, c_int, c_ubyte, c_ulong, c_void_p
+from ctypes import CDLL, Array, c_bool, c_char_p, c_int, c_ulong, c_void_p
 from os.path import exists
 from typing import Dict, List, Tuple
 

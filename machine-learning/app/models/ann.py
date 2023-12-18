@@ -3,9 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Tuple
 
-from numpy.typing import NDArray
-
 from ann.ann import Ann
+from app.schemas import ndarray_f32, ndarray_i32, ndarray_i64
 
 from ..config import log, settings
 
@@ -48,7 +47,7 @@ class AnnSession:
         shapes = self.ann.output_shapes[self.model]
         return [AnnNode(None, s) for s in shapes]
 
-    def run(self, output_names: List[str], input_feed: Dict[str, NDArray], run_options: Any = None) -> List[NDArray]:
+    def run(self, output_names: List[str] | None, input_feed: Any, run_options: Any = None) -> List[ndarray_f32]:
         inputs = [*input_feed.values()]
         return self.ann.execute(self.model, inputs)
 

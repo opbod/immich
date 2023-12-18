@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
 from transformers import AutoTokenizer
 
