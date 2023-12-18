@@ -61,7 +61,6 @@ let app: INestApplication;
 
 export const testApp = {
   create: async (options?: TestAppOptions): Promise<[any, INestApplication]> => {
-    await app.get(AppService).init();
     const { jobs } = options || { jobs: false };
 
     const moduleFixture = await Test.createTestingModule({ imports: [AppModule], providers: [AppService] })
@@ -84,10 +83,12 @@ export const testApp = {
       .compile();
 
     app = await moduleFixture.createNestApplication().init();
+    await app.get(AppService).init();
 
     return [app.getHttpServer(), app];
   },
   reset: async (options?: ResetOptions) => {
+    await app.get(AppService).init();
     await db.reset(options);
   },
   teardown: async () => {
