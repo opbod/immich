@@ -1,9 +1,10 @@
 from ctypes import CDLL, Array, c_bool, c_char_p, c_int, c_ulong, c_void_p
 from os.path import exists
-from typing import Dict, List, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
+
+from app.config import log
 
 try:
     CDLL("libmali.so")  # fail if libmali.so is not mounted into container
@@ -21,7 +22,7 @@ try:
     libann.tensors.restype = c_int
     is_available = True
 except OSError as e:
-    print("Could not load ANN shared libraries, using ONNX:", e)
+    log.debug("Could not load ANN shared libraries, using ONNX: %s", e)
     is_available = False
 
 
@@ -39,9 +40,9 @@ class _Singleton(type):
 
 
 class Ann(metaclass=_Singleton):
-    def __init__(self, log_level=3, tuning_level=1, tuning_file: str = None) -> None:
+    def __init__(self, log_level=3, tuning_level=1, tuning_file: str | None = None) -> None:
         if not is_available:
-            return
+            raise RuntimeError("libann is not available!")
         if tuning_file and not exists(tuning_file):
             raise ValueError("tuning_file must point to an existing (possibly empty) file!")
         if tuning_level == 0 and tuning_file is None:
@@ -53,16 +54,17 @@ class Ann(metaclass=_Singleton):
         self.log_level = log_level
         self.tuning_level = tuning_level
         self.tuning_file = tuning_file
-        self.output_shapes: Dict[int, Tuple[Tuple[int, ...]]] = {}
-        self.input_shapes: Dict[int, Tuple[Tuple[int, ...]]] = {}
+        self.output_shapes: dict[int, tuple[tuple[int, ...]]] = {}
+        self.input_shapes: dict[int, tuple[tuple[int, ...]]] = {}
+        self.ann: int | None = None
         self.new()
 
     def new(self):
-        if not hasattr(self, "ann"):
+        if self.ann is None:
             self.ann = libann.init(
                 self.log_level,
                 self.tuning_level,
-                self.tuning_file.encode("utf-8") if self.tuning_file else None,
+                self.tuning_file.encode() if self.tuning_file else None,
             )
             self.ref_count = 0
 
@@ -70,11 +72,14 @@ class Ann(metaclass=_Singleton):
 
     def destroy(self) -> None:
         self.ref_count -= 1
-        if self.ref_count <= 0 and hasattr(self, "ann"):
+        if self.ref_count <= 0 and self.ann is not None:
             libann.destroy(self.ann)
+            self.ann = None
 
     def __del__(self) -> None:
-        self.destroy()
+        if self.ann is not None:
+            libann.destroy(self.ann)
+            self.ann = None
 
     def load(
         self,
@@ -82,7 +87,7 @@ class Ann(metaclass=_Singleton):
         fast_math=True,
         fp16=False,
         save_cached_network=False,
-        cached_network_path: str = None,
+        cached_network_path: str | None = None,
     ) -> int:
         if not (exists(model_path) and model_path.endswith((".armnn", ".tflite", ".onnx"))):
             raise ValueError("model_path must be a file with extension .armnn, .tflite or .onnx")
@@ -92,11 +97,11 @@ class Ann(metaclass=_Singleton):
             raise ValueError("save_cached_network is True, cached_network_path must be specified!")
         net_id = libann.load(
             self.ann,
-            model_path.encode("utf-8"),
+            model_path.encode(),
             fast_math,
             fp16,
             save_cached_network,
-            cached_network_path.encode("utf-8") if cached_network_path else None,
+            cached_network_path.encode() if cached_network_path else None,
         )
 
         self.input_shapes[net_id] = tuple(
@@ -111,7 +116,7 @@ class Ann(metaclass=_Singleton):
         libann.unload(self.ann, network_id)
         del self.output_shapes[network_id]
 
-    def execute(self, network_id: int, input_tensors: List[NDArray]) -> List[NDArray]:
+    def execute(self, network_id: int, input_tensors: list[NDArray]) -> list[NDArray]:
         if not isinstance(input_tensors, list):
             raise ValueError("input_tensors needs to be a list!")
         net_input_shapes = self.input_shapes[network_id]
@@ -128,7 +133,7 @@ class Ann(metaclass=_Singleton):
         libann.execute(self.ann, network_id, inputs, outputs)
         return output_tensors
 
-    def shape(self, network_id: int, input=False, index=0) -> Tuple[int]:
+    def shape(self, network_id: int, input=False, index=0) -> tuple[int]:
         s = libann.shape(self.ann, network_id, input, index)
         a = []
         while s != 0:

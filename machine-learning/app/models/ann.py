@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Tuple
+from typing import Any, NamedTuple
 
 from ann.ann import Ann
-from app.schemas import ndarray_f32, ndarray_i32, ndarray_i64
+from app.schemas import ndarray_f32, ndarray_i32
 
 from ..config import log, settings
 
@@ -16,15 +16,19 @@ class AnnSession:
 
     def __init__(self, model_path: Path):
         tuning_file = Path(settings.cache_folder) / "gpu-tuning.ann"
-        with open(tuning_file, "a"):
+        with tuning_file.open(mode="a"):
+            # make sure tuning file exists (without clearing contents)
+            # once filled, the tuning file reduces the cost/time of the first
+            # inference after model load by 10s of seconds
             pass
         self.ann = Ann(tuning_level=3, tuning_file=tuning_file.as_posix())
         log.info("Loading ANN model %s ...", model_path)
         cache_file = model_path.with_suffix(".anncache")
         save = False
-        if not cache_file.exists():
+        if not cache_file.is_file():
             save = True
-            with open(cache_file, mode="a"):
+            with cache_file.open(mode="a"):
+                # create empty model cache file
                 pass
 
         self.model = self.ann.load(
@@ -39,19 +43,24 @@ class AnnSession:
         log.info("Unloaded ANN model %d", self.model)
         self.ann.destroy()
 
-    def get_inputs(self) -> List[AnnNode]:
+    def get_inputs(self) -> list[AnnNode]:
         shapes = self.ann.input_shapes[self.model]
         return [AnnNode(None, s) for s in shapes]
 
-    def get_outputs(self) -> List[AnnNode]:
+    def get_outputs(self) -> list[AnnNode]:
         shapes = self.ann.output_shapes[self.model]
         return [AnnNode(None, s) for s in shapes]
 
-    def run(self, output_names: List[str] | None, input_feed: Any, run_options: Any = None) -> List[ndarray_f32]:
+    def run(
+        self,
+        output_names: list[str] | None,
+        input_feed: dict[str, ndarray_f32] | dict[str, ndarray_i32],
+        run_options: Any = None,
+    ) -> list[ndarray_f32]:
         inputs = [*input_feed.values()]
         return self.ann.execute(self.model, inputs)
 
 
 class AnnNode(NamedTuple):
     name: str | None
-    shape: Tuple[int, ...]
+    shape: tuple[int, ...]

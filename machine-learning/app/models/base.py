@@ -143,15 +143,17 @@ class InferenceModel(ABC):
 
     def _make_session(self, model_path: Path) -> AnnSession | ort.InferenceSession:
         armnn_path = model_path.with_suffix(".armnn")
-        if settings.ann and ann.ann.is_available and armnn_path.exists():
+        if settings.ann and ann.ann.is_available and armnn_path.is_file():
             session = AnnSession(armnn_path)
-        else:
+        elif model_path.is_file():
             session = ort.InferenceSession(
                 model_path.as_posix(),
                 sess_options=self.sess_options,
                 providers=self.providers,
                 provider_options=self.provider_options,
             )
+        else:
+            raise ValueError(f"the file model_path='{model_path}' does not exist")
         return session
 
 
